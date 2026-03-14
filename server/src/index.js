@@ -6,10 +6,12 @@ const dotenv          = require("dotenv");
 const cookieParser    = require("cookie-parser");
 
 dotenv.config();
-
 require("./config/db");
 
 const errorMiddleware = require("./middleware/error.middleware");
+
+// Import routes
+const authRoutes = require("./modules/auth/auth.routes");
 
 const app    = express();
 const server = http.createServer(app);
@@ -18,11 +20,14 @@ app.use(cors({
   origin:      process.env.CLIENT_URL,
   credentials: true,
 }));
-
 app.use(express.json());
 app.use(cookieParser());
 app.use(morgan("dev"));
 
+// ─── ROUTES ───────────────────────────────────────────
+app.use("/api/auth", authRoutes);
+
+// ─── HEALTH CHECK ─────────────────────────────────────
 app.get("/api/health", (req, res) => {
   res.json({
     success:     true,
@@ -31,6 +36,7 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+// Global error handler — always last
 app.use(errorMiddleware);
 
 const PORT = process.env.PORT || 5000;

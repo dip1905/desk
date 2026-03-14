@@ -1,0 +1,238 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+enum Department {
+  ENGINEERING
+  DESIGN
+  MARKETING
+  SALES
+  HR
+  FINANCE
+}
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  INTERN
+}
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+}
+
+model User {
+  id        String    @id @default(uuid())
+  name      String
+  email     String    @unique
+  password  String
+  role      Role      @default(EMPLOYEE)
+  avatar    String?
+  isActive  Boolean   @default(true)
+  lastSeen  DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  employee       Employee?
+  sentMessages   Message[]
+  assignedTasks  Task[]          @relation("AssignedTo")
+  createdTasks   Task[]          @relation("CreatedBy")
+  notifications  Notification[]
+  files          FileStore[]
+  comments       Comment[]
+  projectMembers ProjectMember[]
+  channelMembers ChannelMember[]
+}
+
+model Employee {
+  id             String         @id @default(uuid())
+  userId         String         @unique
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department     Department
+  designation    String
+  employmentType EmploymentType
+  salary         Float
+  joiningDate    DateTime
+  phone          String?
+  address        String?
+  leaveBalance   Json           @default("{\"sick\":10,\"casual\":10,\"earned\":15}")
+  leaves         Leave[]
+  attendances    Attendance[]
+}
+
+model Leave {
+  id         String   @id @default(uuid())
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  type       String
+  from       DateTime
+  to         DateTime
+  reason     String
+  status     String   @default("PENDING")
+  reviewNote String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model Attendance {
+  id         String    @id @default(uuid())
+  employeeId String
+  employee   Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  date       DateTime  @default(now())
+  checkIn    DateTime?
+  checkOut   DateTime?
+  status     String
+  createdAt  DateTime  @default(now())
+}
+
+model Project {
+  id          String        @id @default(uuid())
+  name        String
+  description String?
+  status      ProjectStatus @default(PLANNING)
+  deadline    DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  tasks       Task[]
+  members     ProjectMember[]
+}
+
+model ProjectMember {
+  id        String  @id @default(uuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+}
+
+model Task {
+  id           String       @id @default(uuid())
+  title        String
+  description  String?
+  status       TaskStatus   @default(TODO)
+  priority     TaskPriority @default(MEDIUM)
+  deadline     DateTime?
+  projectId    String
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignedToId String?
+  assignedTo   User?        @relation("AssignedTo", fields: [assignedToId], references: [id])
+  createdById  String
+  createdBy    User         @relation("CreatedBy", fields: [createdById], references: [id])
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  comments     Comment[]
+  activityLogs ActivityLog[]
+}
+
+model Comment {
+  id        String   @id @default(uuid())
+  content   String
+  taskId    String
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  createdAt DateTime @default(now())
+}
+
+model ActivityLog {
+  id        String   @id @default(uuid())
+  taskId    String
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  action    String
+  userId    String
+  createdAt DateTime @default(now())
+}
+
+model Channel {
+  id        String          @id @default(uuid())
+  name      String
+  isPrivate Boolean         @default(false)
+  createdAt DateTime        @default(now())
+  messages  Message[]
+  members   ChannelMember[]
+}
+
+model ChannelMember {
+  id        String  @id @default(uuid())
+  channelId String
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+}
+
+model Message {
+  id         String    @id @default(uuid())
+  content    String?
+  channelId  String?
+  channel    Channel?  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  receiverId String?
+  senderId   String
+  sender     User      @relation(fields: [senderId], references: [id])
+  fileUrl    String?
+  isEdited   Boolean   @default(false)
+  editedAt   DateTime?
+  isDeleted  Boolean   @default(false)
+  deletedAt  DateTime?
+  createdAt  DateTime  @default(now())
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  type      String
+  createdAt DateTime @default(now())
+}
+
+model FileStore {
+  id         String   @id @default(uuid())
+  name       String
+  url        String
+  publicId   String
+  type       String
+  size       Int
+  uploadedBy String
+  uploader   User     @relation(fields: [uploadedBy], references: [id])
+  createdAt  DateTime @default(now())
+}

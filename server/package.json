@@ -5,8 +5,14 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon --watch src src/index.js",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "seed": "node prisma/seed.js",
+    "build": "npx prisma generate && npx prisma migrate deploy"
   },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  
   "keywords": [],
   "author": "",
   "license": "ISC",

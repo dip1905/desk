@@ -10,36 +10,19 @@ const fileSlice = createSlice({
   name: "files",
   initialState,
   reducers: {
-
-    setFiles: (state, action) => {
-      state.files = action.payload;
+    setFiles:          (state, action) => { state.files = action.payload; },
+    addFile:           (state, action) => { state.files.unshift(action.payload); },
+    removeFile:        (state, action) => {
+      state.files = state.files.filter((f) => f.id !== action.payload);
     },
-
-    addFile: (state, action) => {
-      state.files.unshift(action.payload);
-    },
-
-    removeFile: (state, action) => {
-      state.files = state.files
-        .filter((f) => f.id !== action.payload);
-    },
-
-    setUploadProgress: (state, action) => {
-      state.uploadProgress = action.payload;
-    },
-
-    setLoading: (state, action) => {
-      state.loading = action.payload;
-    },
+    setUploadProgress: (state, action) => { state.uploadProgress = action.payload; },
+    setLoading:        (state, action) => { state.loading = action.payload; },
   },
 });
 
 export const {
-  setFiles,
-  addFile,
-  removeFile,
-  setUploadProgress,
-  setLoading,
+  setFiles, addFile, removeFile,
+  setUploadProgress, setLoading,
 } = fileSlice.actions;
 
 export default fileSlice.reducer;

@@ -1,28 +1,13 @@
-# Dependencies
 node_modules/
 **/node_modules/
-
-# Environment variables
 .env
 **/.env
-
-# Build output
 dist/
-build/
 **/dist/
-
-# Lock files
 package-lock.json
 **/package-lock.json
-
-# Logs
 *.log
-npm-debug.log*
-
-# OS files
 .DS_Store
 Thumbs.db
-
-# Vite
 .vite/
 **/.vite/

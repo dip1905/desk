@@ -9,44 +9,98 @@ import {
   useCreateProjectMutation,
   useDeleteProjectMutation,
 } from "../../store/api/projectApi";
-import { formatDate, getStatusColor } from "../../utils/formatters";
-import useAuth                 from "../../hooks/useAuth";
-import toast                   from "react-hot-toast";
+import { useGetEmployeesQuery } from "../../store/api/hrApi";
+import { formatDate }           from "../../utils/formatters";
+import useAuth                  from "../../hooks/useAuth";
+import toast                    from "react-hot-toast";
 import {
-  HiOutlinePlus, HiOutlineTrash,
-  HiOutlineEye, HiOutlineCalendar,
+  HiOutlinePlus,
+  HiOutlineTrash,
+  HiOutlineEye,
+  HiOutlineCalendar,
   HiOutlineUsers,
 } from "react-icons/hi";
 
-const STATUSES = ["PLANNING","ACTIVE","ON_HOLD","COMPLETED"];
+const STATUSES    = ["PLANNING","ACTIVE","ON_HOLD","COMPLETED"];
+const PROJ_ROLES  = [
+  "COORDINATOR","TEAM_LEAD","DEVELOPER",
+  "DESIGNER","TESTER","MEMBER"
+];
+
+const statusColors = {
+  PLANNING:  "bg-gray-100 text-gray-600",
+  ACTIVE:    "bg-green-100 text-green-600",
+  ON_HOLD:   "bg-yellow-100 text-yellow-600",
+  COMPLETED: "bg-blue-100 text-blue-600",
+};
 
 const Projects = () => {
   const navigate              = useNavigate();
-  const { isManager }         = useAuth();
+  const { isManager, user }   = useAuth();
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const { data, isLoading, refetch } = useGetProjectsQuery();
+  const { data: empData }    = useGetEmployeesQuery({});
   const [createProject, { isLoading: isCreating }] =
     useCreateProjectMutation();
   const [deleteProject] = useDeleteProjectMutation();
 
-  const projects = Array.isArray(data?.data) ? data.data : [];
+  // Fix: handle both array and object response
+  const projects   = Array.isArray(data?.data)
+    ? data.data
+    : data?.data?.projects || [];
+  const employees  = empData?.data?.employees || [];
 
   const [form, setForm] = useState({
-    name: "", description: "",
-    status: "PLANNING", deadline: "",
+    name:        "",
+    description: "",
+    status:      "PLANNING",
+    deadline:    "",
   });
+
+  const [selectedMembers, setSelectedMembers] = useState([]);
+
+  const handleAddMember = (empId) => {
+    if (!empId) return;
+    if (selectedMembers.find((m) => m.userId === empId)) return;
+    const emp = employees.find((e) => e.id === empId);
+    if (emp) {
+      setSelectedMembers((prev) => [
+        ...prev,
+        { userId: empId, name: emp.name, projectRole: "MEMBER" }
+      ]);
+    }
+  };
+
+  const handleRemoveMember = (userId) => {
+    setSelectedMembers((prev) =>
+      prev.filter((m) => m.userId !== userId)
+    );
+  };
+
+  const handleRoleChange = (userId, role) => {
+    setSelectedMembers((prev) =>
+      prev.map((m) => m.userId === userId
+        ? { ...m, projectRole: role }
+        : m
+      )
+    );
+  };
 
   const handleCreate = async (e) => {
     e.preventDefault();
     try {
-      await createProject(form).unwrap();
+      await createProject({
+        ...form,
+        memberIds: selectedMembers.map((m) => m.userId),
+      }).unwrap();
       toast.success("Project created successfully");
       setIsModalOpen(false);
       setForm({
         name: "", description: "",
         status: "PLANNING", deadline: "",
       });
+      setSelectedMembers([]);
       refetch();
     } catch (error) {
       toast.error(error?.data?.message || "Failed to create project");
@@ -59,16 +113,9 @@ const Projects = () => {
       await deleteProject(id).unwrap();
       toast.success("Project deleted");
       refetch();
-    } catch (error) {
+    } catch {
       toast.error("Failed to delete project");
     }
-  };
-
-  const statusColors = {
-    PLANNING:   "bg-gray-100 text-gray-600",
-    ACTIVE:     "bg-green-100 text-green-600",
-    ON_HOLD:    "bg-yellow-100 text-yellow-600",
-    COMPLETED:  "bg-blue-100 text-blue-600",
   };
 
   return (
@@ -95,13 +142,17 @@ const Projects = () => {
         )}
       </div>
 
+      {/* Projects Grid */}
       {isLoading ? (
         <PageSpinner />
       ) : projects.length === 0 ? (
         <EmptyState
           icon="📋"
           title="No projects yet"
-          description="Create your first project to get started"
+          description={isManager()
+            ? "Create your first project to get started"
+            : "You have not been added to any projects yet"
+          }
           action={isManager() && (
             <button
               onClick={() => setIsModalOpen(true)}
@@ -113,13 +164,14 @@ const Projects = () => {
           )}
         />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3
-          gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2
+          lg:grid-cols-3 gap-4">
           {projects.map((project) => (
-            <div key={project.id}
+            <div
+              key={project.id}
               className="bg-white rounded-xl border border-gray-100
-                shadow-sm p-5 hover:shadow-md transition-shadow">
-
+                shadow-sm p-5 hover:shadow-md transition-shadow"
+            >
               {/* Header */}
               <div className="flex items-start justify-between mb-3">
                 <h3 className="font-semibold text-gray-800 text-base
@@ -129,7 +181,7 @@ const Projects = () => {
                 <span className={`text-xs px-2 py-0.5 rounded-full
                   font-medium flex-shrink-0
                   ${statusColors[project.status]}`}>
-                  {project.status.replace("_", " ")}
+                  {project.status.replace("_"," ")}
                 </span>
               </div>
 
@@ -147,7 +199,7 @@ const Projects = () => {
                   <HiOutlineUsers />
                   {project.members?.length || 0} members
                 </span>
-                <span className="flex items-center gap-1">
+                <span>
                   {project._count?.tasks || 0} tasks
                 </span>
                 {project.deadline && (
@@ -158,20 +210,18 @@ const Projects = () => {
                 )}
               </div>
 
-              {/* Member avatars */}
+              {/* Member Avatars + Actions */}
               <div className="flex items-center justify-between">
                 <div className="flex -space-x-2">
                   {project.members?.slice(0, 4).map((m) => (
-                    <div key={m.id}
+                    <div
+                      key={m.id}
                       className="w-7 h-7 rounded-full bg-blue-500
                         border-2 border-white flex items-center
-                        justify-center text-white text-xs font-bold">
-                      {m.user?.avatar
-                        ? <img src={m.user.avatar} alt=""
-                            className="w-full h-full rounded-full
-                              object-cover" />
-                        : m.user?.name?.[0]
-                      }
+                        justify-center text-white text-xs font-bold"
+                      title={`${m.user?.name} (${m.projectRole || "MEMBER"})`}
+                    >
+                      {m.user?.name?.[0]}
                     </div>
                   ))}
                   {(project.members?.length || 0) > 4 && (
@@ -185,9 +235,7 @@ const Projects = () => {
 
                 <div className="flex items-center gap-1">
                   <button
-                    onClick={() =>
-                      navigate(`/projects/${project.id}`)
-                    }
+                    onClick={() => navigate(`/projects/${project.id}`)}
                     className="p-1.5 text-blue-500 hover:bg-blue-50
                       rounded-lg transition-colors"
                     title="View"
@@ -215,8 +263,12 @@ const Projects = () => {
       {/* Create Project Modal */}
       <Modal
         isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
+        onClose={() => {
+          setIsModalOpen(false);
+          setSelectedMembers([]);
+        }}
         title="Create New Project"
+        size="lg"
       >
         <form onSubmit={handleCreate} className="space-y-4">
 
@@ -240,7 +292,7 @@ const Projects = () => {
             <label className="block text-sm font-medium
               text-gray-700 mb-1">Description</label>
             <textarea
-              rows={3}
+              rows={2}
               value={form.description}
               onChange={(e) => setForm((p) => ({
                 ...p, description: e.target.value
@@ -267,7 +319,7 @@ const Projects = () => {
               >
                 {STATUSES.map((s) => (
                   <option key={s} value={s}>
-                    {s.replace("_", " ")}
+                    {s.replace("_"," ")}
                   </option>
                 ))}
               </select>
@@ -288,10 +340,83 @@ const Projects = () => {
             </div>
           </div>
 
+          {/* Add Team Members */}
+          <div>
+            <label className="block text-sm font-medium
+              text-gray-700 mb-2">Add Team Members</label>
+
+            <select
+              onChange={(e) => {
+                handleAddMember(e.target.value);
+                e.target.value = "";
+              }}
+              className="w-full px-3 py-2 border border-gray-200
+                rounded-lg text-sm focus:outline-none
+                focus:ring-2 focus:ring-blue-500 bg-white mb-2"
+            >
+              <option value="">Select employee to add...</option>
+              {employees
+                .filter((e) => e.id !== user?.id)
+                .filter((e) => !selectedMembers
+                  .find((m) => m.userId === e.id))
+                .map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.name} — {emp.employee?.designation}
+                  </option>
+                ))
+              }
+            </select>
+
+            {/* Selected Members */}
+            {selectedMembers.length > 0 && (
+              <div className="space-y-2 max-h-40 overflow-y-auto">
+                {selectedMembers.map((m) => (
+                  <div key={m.userId}
+                    className="flex items-center gap-2 p-2
+                      bg-gray-50 rounded-lg">
+                    <div className="w-7 h-7 rounded-full bg-blue-500
+                      flex items-center justify-center text-white
+                      text-xs font-bold flex-shrink-0">
+                      {m.name?.[0]}
+                    </div>
+                    <span className="text-sm text-gray-700 flex-1">
+                      {m.name}
+                    </span>
+                    <select
+                      value={m.projectRole}
+                      onChange={(e) =>
+                        handleRoleChange(m.userId, e.target.value)
+                      }
+                      className="text-xs border border-gray-200
+                        rounded px-2 py-1 bg-white focus:outline-none"
+                    >
+                      {PROJ_ROLES.map((r) => (
+                        <option key={r} value={r}>
+                          {r.replace("_"," ")}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveMember(m.userId)}
+                      className="text-red-400 hover:text-red-600
+                        text-xs px-1"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="flex gap-3 pt-2">
             <button
               type="button"
-              onClick={() => setIsModalOpen(false)}
+              onClick={() => {
+                setIsModalOpen(false);
+                setSelectedMembers([]);
+              }}
               className="flex-1 px-4 py-2 border border-gray-200
                 rounded-lg text-sm font-medium text-gray-600
                 hover:bg-gray-50"

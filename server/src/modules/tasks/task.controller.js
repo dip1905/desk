@@ -202,8 +202,7 @@ const updateTaskStatus = async (req, res, next) => {
   try {
     const { status } = req.body;
 
-    if (!["TODO", "IN_PROGRESS", "IN_REVIEW", "DONE"]
-      .includes(status)) {
+    if (!["TODO","IN_PROGRESS","IN_REVIEW","DONE"].includes(status)) {
       return res.status(400).json({
         success: false,
         message: "Invalid status",
@@ -221,26 +220,56 @@ const updateTaskStatus = async (req, res, next) => {
       });
     }
 
+    // Only assignee can change their own task status
+    // Manager and above can change any task
+    const isManager = ["SUPER_ADMIN","ADMIN","MANAGER"]
+      .includes(req.user.role);
+
+    if (!isManager && task.assignedToId !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "You can only change status of tasks assigned to you",
+      });
+    }
+
+    const oldStatus = task.status;
+
     const updated = await prisma.task.update({
       where: { id: req.params.id },
       data:  { status },
     });
 
-    // Log activity
+    // Log the status change
     await prisma.activityLog.create({
       data: {
-        taskId: req.params.id,
-        action: `Status changed from ${task.status} to ${status}`,
+        taskId: task.id,
+        action: `Status changed from ${oldStatus} to ${status} by ${req.user.name}`,
         userId: req.user.id,
       }
     });
+
+    // Notify task creator if status changed to IN_REVIEW or DONE
+    if (["IN_REVIEW","DONE"].includes(status) &&
+        task.createdById !== req.user.id) {
+      await prisma.notification.create({
+        data: {
+          userId:  task.createdById,
+          title:   "Task Status Updated",
+          message: `Task "${task.title}" moved to ${status.replace("_"," ")} by ${req.user.name}`,
+          type:    "TASK",
+        }
+      });
+    }
 
     res.status(200).json({
       success: true,
       message: "Task status updated",
       data:    updated,
     });
-  } catch (error) { next(error); }
+
+  } catch (error) {
+    next(error);
+  }
 };
 
 const addComment = async (req, res, next) => {

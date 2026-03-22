@@ -1,24 +1,25 @@
 import { useState, useEffect, useRef } from "react";
-import AppLayout                       from "../../components/layout/AppLayout";
-import { PageSpinner }                 from "../../components/ui/Spinner";
-import EmptyState                      from "../../components/ui/EmptyState";
-import { useDispatch, useSelector }    from "react-redux";
+import AppLayout                        from "../../components/layout/AppLayout";
+import { PageSpinner }                  from "../../components/ui/Spinner";
+import EmptyState                       from "../../components/ui/EmptyState";
+import { useDispatch, useSelector }     from "react-redux";
 import {
   setChannels,
   setActiveChannel,
   setMessages,
 } from "../../store/slices/chatSlice";
-import { emitSocketEvent }  from "../../store/middleware/socketMiddleware";
+import { emitSocketEvent }   from "../../store/middleware/socketMiddleware";
 import { getInitials, formatTime } from "../../utils/formatters";
-import useAuth              from "../../hooks/useAuth";
-import axios                from "axios";
-import toast                from "react-hot-toast";
+import useAuth               from "../../hooks/useAuth";
+import axios                 from "axios";
+import toast                 from "react-hot-toast";
 import {
   HiOutlinePaperAirplane,
   HiOutlinePencil,
   HiOutlineTrash,
   HiOutlineHashtag,
   HiOutlineUsers,
+  HiOutlineChat,
 } from "react-icons/hi";
 
 const Chat = () => {
@@ -30,45 +31,60 @@ const Chat = () => {
   const onlineUsers       = useSelector((s) => s.chat.onlineUsers);
   const typingUsers       = useSelector((s) => s.chat.typingUsers);
 
-  const [content,     setContent]     = useState("");
-  const [editingId,   setEditingId]   = useState(null);
-  const [editContent, setEditContent] = useState("");
-  const [isLoading,   setIsLoading]   = useState(false);
+  const [content,      setContent]      = useState("");
+  const [editingId,    setEditingId]    = useState(null);
+  const [editContent,  setEditContent]  = useState("");
+  const [isLoading,    setIsLoading]    = useState(false);
+  const [activeTab,    setActiveTab]    = useState("channels");
+  const [employees,    setEmployees]    = useState([]);
+  const [activeDM,     setActiveDM]     = useState(null);
+
   const messagesEndRef = useRef(null);
   const typingTimeout  = useRef(null);
 
   const API     = import.meta.env.VITE_API_URL;
   const headers = { Authorization: `Bearer ${token}` };
 
-  // Load channels on mount
+  // Load channels and employees on mount
   useEffect(() => {
-    const fetchChannels = async () => {
+    const fetchData = async () => {
       setIsLoading(true);
       try {
-        const res = await axios.get(
+        // Load channels
+        const channelRes = await axios.get(
           `${API}/chat/channels`, { headers }
         );
-        dispatch(setChannels(res.data.data));
+        dispatch(setChannels(channelRes.data.data));
 
-        // Auto select first channel
-        if (res.data.data.length > 0) {
-          selectChannel(res.data.data[0].id);
+        if (channelRes.data.data.length > 0) {
+          selectChannel(channelRes.data.data[0].id);
         }
+
+        // Load all employees for DM
+        const empRes = await axios.get(
+          `${API}/employees`, { headers }
+        );
+        setEmployees(
+          (empRes.data.data?.employees || [])
+            .filter((e) => e.id !== user?.id)
+        );
+
       } catch {
-        toast.error("Failed to load channels");
+        toast.error("Failed to load chat data");
       } finally {
         setIsLoading(false);
       }
     };
-    fetchChannels();
+    fetchData();
   }, []);
 
-  // Auto scroll to bottom on new messages
+  // Auto scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages[activeChannel]]);
+  }, [messages[activeChannel], messages[`dm_${activeDM?.id}`]]);
 
   const selectChannel = async (channelId) => {
+    setActiveDM(null);
     dispatch(setActiveChannel(channelId));
     dispatch(emitSocketEvent("channel:join", channelId));
 
@@ -85,40 +101,60 @@ const Chat = () => {
     }
   };
 
+  const selectDM = async (emp) => {
+    setActiveDM(emp);
+    dispatch(setActiveChannel(null));
+    const dmKey = `dm_${emp.id}`;
+
+    try {
+      const res = await axios.get(
+        `${API}/chat/dm/${emp.id}/messages`,
+        { headers }
+      );
+      dispatch(setMessages({
+        channelId: dmKey,
+        messages:  res.data.data
+      }));
+    } catch {
+      toast.error("Failed to load messages");
+    }
+  };
+
   const handleSend = (e) => {
     e.preventDefault();
-    if (!content.trim() || !activeChannel) return;
+    if (!content.trim()) return;
 
-    dispatch(emitSocketEvent("message:send", {
-      channelId: activeChannel,
-      content:   content.trim(),
-    }));
+    if (activeDM) {
+      // Send DM
+      dispatch(emitSocketEvent("dm:send", {
+        receiverId: activeDM.id,
+        content:    content.trim(),
+      }));
+    } else if (activeChannel) {
+      // Send channel message
+      dispatch(emitSocketEvent("message:send", {
+        channelId: activeChannel,
+        content:   content.trim(),
+      }));
+    }
 
-    // Stop typing indicator
-    dispatch(emitSocketEvent("typing:stop", {
-      channelId: activeChannel
-    }));
-
+    clearTimeout(typingTimeout.current);
     setContent("");
   };
 
   const handleTyping = (e) => {
     setContent(e.target.value);
-
-    // Emit typing start
-    dispatch(emitSocketEvent("typing:start", {
-      channelId: activeChannel
-    }));
-
-    // Clear previous timeout
-    clearTimeout(typingTimeout.current);
-
-    // Stop typing after 2 seconds of no input
-    typingTimeout.current = setTimeout(() => {
-      dispatch(emitSocketEvent("typing:stop", {
+    if (activeChannel) {
+      dispatch(emitSocketEvent("typing:start", {
         channelId: activeChannel
       }));
-    }, 2000);
+      clearTimeout(typingTimeout.current);
+      typingTimeout.current = setTimeout(() => {
+        dispatch(emitSocketEvent("typing:stop", {
+          channelId: activeChannel
+        }));
+      }, 2000);
+    }
   };
 
   const handleEdit = (msg) => {
@@ -133,7 +169,6 @@ const Chat = () => {
       content:   editContent.trim(),
     }));
     setEditingId(null);
-    setEditContent("");
   };
 
   const handleDelete = (messageId) => {
@@ -141,79 +176,151 @@ const Chat = () => {
     dispatch(emitSocketEvent("message:delete", { messageId }));
   };
 
-  const currentMessages = messages[activeChannel] || [];
+  const isOnline = (userId) => onlineUsers.includes(userId);
+
   const activeChannelData = channels.find(
     (c) => c.id === activeChannel
   );
 
-  // Get typing users for active channel
-  const whoIsTyping = (typingUsers[activeChannel] || [])
-    .filter((t) => t.userId !== user?.id);
+  const currentKey = activeDM
+    ? `dm_${activeDM.id}`
+    : activeChannel;
 
-  // Check if user is online
-  const isOnline = (userId) => onlineUsers.includes(userId);
+  const currentMessages = messages[currentKey] || [];
+
+  const whoIsTyping = activeChannel
+    ? (typingUsers[activeChannel] || [])
+        .filter((t) => t.userId !== user?.id)
+    : [];
 
   return (
     <AppLayout title="Chat">
       <div className="flex gap-4 h-[calc(100vh-8rem)]">
 
-        {/* ─── Channel Sidebar ────────────────────── */}
+        {/* ─── Left Sidebar ───────────────────────── */}
         <div className="w-64 bg-white rounded-xl border
           border-gray-100 shadow-sm flex flex-col flex-shrink-0">
 
-          {/* Header */}
-          <div className="p-4 border-b border-gray-100">
-            <h3 className="font-semibold text-gray-800 text-sm">
+          {/* Tabs */}
+          <div className="flex border-b border-gray-100">
+            <button
+              onClick={() => setActiveTab("channels")}
+              className={`flex-1 py-3 text-xs font-semibold
+                transition-colors flex items-center justify-center gap-1
+                ${activeTab === "channels"
+                  ? "text-blue-600 border-b-2 border-blue-600"
+                  : "text-gray-400 hover:text-gray-600"
+                }`}
+            >
+              <HiOutlineHashtag />
               Channels
-            </h3>
-            <p className="text-xs text-gray-400 mt-0.5">
-              {channels.length} channels
-            </p>
+            </button>
+            <button
+              onClick={() => setActiveTab("dms")}
+              className={`flex-1 py-3 text-xs font-semibold
+                transition-colors flex items-center justify-center gap-1
+                ${activeTab === "dms"
+                  ? "text-blue-600 border-b-2 border-blue-600"
+                  : "text-gray-400 hover:text-gray-600"
+                }`}
+            >
+              <HiOutlineChat />
+              Direct
+            </button>
           </div>
 
           {/* Channel List */}
-          <div className="flex-1 overflow-y-auto p-2">
-            {isLoading ? (
-              <PageSpinner />
-            ) : channels.length === 0 ? (
-              <p className="text-xs text-gray-400 text-center mt-4">
-                No channels available
-              </p>
-            ) : (
-              channels.map((channel) => (
-                <button
-                  key={channel.id}
-                  onClick={() => selectChannel(channel.id)}
-                  className={`w-full flex items-center gap-2
-                    px-3 py-2.5 rounded-lg text-sm transition-colors
-                    text-left mb-0.5
-                    ${activeChannel === channel.id
-                      ? "bg-blue-50 text-blue-600 font-medium"
-                      : "text-gray-600 hover:bg-gray-50"
-                    }`}
-                >
-                  <HiOutlineHashtag className="text-sm flex-shrink-0" />
-                  <span className="truncate flex-1">
-                    {channel.name}
-                  </span>
-                  {channel.isPrivate && (
-                    <span className="text-[10px] bg-gray-100
-                      text-gray-400 px-1.5 py-0.5 rounded">
-                      Private
-                    </span>
-                  )}
-                </button>
-              ))
-            )}
-          </div>
+          {activeTab === "channels" && (
+            <div className="flex-1 overflow-y-auto p-2">
+              {isLoading ? (
+                <PageSpinner />
+              ) : channels.length === 0 ? (
+                <p className="text-xs text-gray-400 text-center mt-4">
+                  No channels available
+                </p>
+              ) : (
+                channels.map((channel) => (
+                  <button
+                    key={channel.id}
+                    onClick={() => selectChannel(channel.id)}
+                    className={`w-full flex items-center gap-2
+                      px-3 py-2.5 rounded-lg text-sm transition-colors
+                      text-left mb-0.5
+                      ${activeChannel === channel.id && !activeDM
+                        ? "bg-blue-50 text-blue-600 font-medium"
+                        : "text-gray-600 hover:bg-gray-50"
+                      }`}
+                  >
+                    <HiOutlineHashtag className="text-sm flex-shrink-0" />
+                    <span className="truncate">{channel.name}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
 
-          {/* Online Members */}
-          {activeChannelData && (
+          {/* DM List — All Employees */}
+          {activeTab === "dms" && (
+            <div className="flex-1 overflow-y-auto p-2">
+              <p className="text-xs text-gray-400 px-3 py-2 font-medium">
+                All Employees ({employees.length})
+              </p>
+              {employees.length === 0 ? (
+                <p className="text-xs text-gray-400 text-center mt-4">
+                  No employees found
+                </p>
+              ) : (
+                employees.map((emp) => (
+                  <button
+                    key={emp.id}
+                    onClick={() => selectDM(emp)}
+                    className={`w-full flex items-center gap-2.5
+                      px-3 py-2 rounded-lg text-sm transition-colors
+                      text-left mb-0.5
+                      ${activeDM?.id === emp.id
+                        ? "bg-blue-50 text-blue-600"
+                        : "text-gray-600 hover:bg-gray-50"
+                      }`}
+                  >
+                    <div className="relative flex-shrink-0">
+                      <div className="w-8 h-8 rounded-full bg-blue-500
+                        flex items-center justify-center text-white
+                        text-xs font-bold">
+                        {emp.avatar
+                          ? <img src={emp.avatar} alt=""
+                              className="w-full h-full rounded-full
+                                object-cover" />
+                          : getInitials(emp.name)
+                        }
+                      </div>
+                      <div className={`absolute -bottom-0.5 -right-0.5
+                        w-2.5 h-2.5 rounded-full border-2 border-white
+                        ${isOnline(emp.id)
+                          ? "bg-green-500"
+                          : "bg-gray-300"
+                        }`}
+                      />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {emp.name}
+                      </p>
+                      <p className="text-xs text-gray-400 truncate">
+                        {emp.employee?.designation || emp.role}
+                      </p>
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+
+          {/* Online Members for active channel */}
+          {activeTab === "channels" && activeChannelData && (
             <div className="border-t border-gray-100 p-3">
               <p className="text-xs font-semibold text-gray-500
-                uppercase tracking-wider mb-2 flex items-center gap-1">
-                <HiOutlineUsers className="text-sm" />
-                Members
+                uppercase tracking-wider mb-2">
+                Members ({activeChannelData.members?.length || 0})
               </p>
               <div className="space-y-1.5">
                 {activeChannelData.members
@@ -227,31 +334,21 @@ const Chat = () => {
                           text-white text-[10px] font-bold">
                           {getInitials(m.user?.name)}
                         </div>
-                        {/* Online indicator */}
-                        <div className={`absolute -bottom-0.5 -right-0.5
-                          w-2.5 h-2.5 rounded-full border-2
-                          border-white
+                        <div className={`absolute -bottom-0.5
+                          -right-0.5 w-2 h-2 rounded-full
+                          border border-white
                           ${isOnline(m.userId)
                             ? "bg-green-500"
                             : "bg-gray-300"
                           }`}
                         />
                       </div>
-                      <span className={`text-xs truncate
-                        ${isOnline(m.userId)
-                          ? "text-gray-700 font-medium"
-                          : "text-gray-400"
-                        }`}>
+                      <span className="text-xs text-gray-600 truncate">
                         {m.user?.name?.split(" ")[0]}
                       </span>
                     </div>
                   ))
                 }
-                {(activeChannelData.members?.length || 0) > 5 && (
-                  <p className="text-xs text-gray-400">
-                    +{activeChannelData.members.length - 5} more
-                  </p>
-                )}
               </div>
             </div>
           )}
@@ -261,36 +358,55 @@ const Chat = () => {
         <div className="flex-1 bg-white rounded-xl border
           border-gray-100 shadow-sm flex flex-col min-w-0">
 
-          {!activeChannel ? (
+          {!activeChannel && !activeDM ? (
             <div className="flex-1 flex items-center justify-center">
               <EmptyState
                 icon="💬"
-                title="Select a channel"
-                description="Choose a channel to start chatting"
+                title="Select a conversation"
+                description="Choose a channel or person to start chatting"
               />
             </div>
           ) : (
             <>
-              {/* Channel Header */}
+              {/* Chat Header */}
               <div className="p-4 border-b border-gray-100
                 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <HiOutlineHashtag className="text-gray-400" />
-                  <h3 className="font-semibold text-gray-800">
-                    {activeChannelData?.name}
-                  </h3>
-                  {activeChannelData?.isPrivate && (
-                    <span className="text-xs bg-gray-100
-                      text-gray-500 px-2 py-0.5 rounded-full">
-                      Private
-                    </span>
-                  )}
-                </div>
-                <span className="text-xs text-gray-400">
-                  {activeChannelData?.members?.length || 0} members •{" "}
-                  <span className="text-green-500 font-medium">
-                    {onlineUsers.length} online
-                  </span>
+                {activeDM ? (
+                  <div className="flex items-center gap-3">
+                    <div className="relative">
+                      <div className="w-8 h-8 rounded-full bg-blue-500
+                        flex items-center justify-center text-white
+                        text-xs font-bold">
+                        {getInitials(activeDM.name)}
+                      </div>
+                      <div className={`absolute -bottom-0.5 -right-0.5
+                        w-2.5 h-2.5 rounded-full border-2 border-white
+                        ${isOnline(activeDM.id)
+                          ? "bg-green-500"
+                          : "bg-gray-300"
+                        }`}
+                      />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-gray-800 text-sm">
+                        {activeDM.name}
+                      </h3>
+                      <p className="text-xs text-gray-400">
+                        {isOnline(activeDM.id) ? "Online" : "Offline"}
+                        {" "}• {activeDM.employee?.designation || activeDM.role}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <HiOutlineHashtag className="text-gray-400" />
+                    <h3 className="font-semibold text-gray-800">
+                      {activeChannelData?.name}
+                    </h3>
+                  </div>
+                )}
+                <span className="text-xs text-green-500 font-medium">
+                  {onlineUsers.length} online
                 </span>
               </div>
 
@@ -302,7 +418,10 @@ const Chat = () => {
                     <EmptyState
                       icon="💭"
                       title="No messages yet"
-                      description="Be the first to say something!"
+                      description={activeDM
+                        ? `Start a conversation with ${activeDM.name}`
+                        : "Be the first to say something!"
+                      }
                     />
                   </div>
                 ) : (
@@ -314,23 +433,18 @@ const Chat = () => {
                         className={`flex gap-3 group
                           ${isOwn ? "flex-row-reverse" : ""}`}
                       >
-                        {/* Avatar */}
                         <div className="relative flex-shrink-0">
                           <div className="w-8 h-8 rounded-full
                             bg-blue-500 flex items-center
                             justify-center text-white text-xs
                             font-bold">
                             {msg.sender?.avatar
-                              ? <img
-                                  src={msg.sender.avatar}
-                                  alt=""
+                              ? <img src={msg.sender.avatar} alt=""
                                   className="w-full h-full
-                                    rounded-full object-cover"
-                                />
+                                    rounded-full object-cover" />
                               : getInitials(msg.sender?.name)
                             }
                           </div>
-                          {/* Online dot */}
                           <div className={`absolute -bottom-0.5
                             -right-0.5 w-2.5 h-2.5 rounded-full
                             border-2 border-white
@@ -341,12 +455,9 @@ const Chat = () => {
                           />
                         </div>
 
-                        {/* Message Bubble */}
                         <div className={`max-w-xs lg:max-w-md
                           flex flex-col
                           ${isOwn ? "items-end" : "items-start"}`}>
-
-                          {/* Sender + Time */}
                           <div className={`flex items-center
                             gap-2 mb-1
                             ${isOwn ? "flex-row-reverse" : ""}`}>
@@ -359,13 +470,10 @@ const Chat = () => {
                             </span>
                             {msg.isEdited && (
                               <span className="text-xs text-gray-400
-                                italic">
-                                (edited)
-                              </span>
+                                italic">(edited)</span>
                             )}
                           </div>
 
-                          {/* Content */}
                           {editingId === msg.id ? (
                             <div className="flex gap-2 w-full">
                               <input
@@ -416,10 +524,8 @@ const Chat = () => {
                               }
                             </div>
                           )}
-
                         </div>
 
-                        {/* Actions on hover */}
                         {!msg.isDeleted && isOwn && (
                           <div className="opacity-0
                             group-hover:opacity-100 flex items-center
@@ -429,7 +535,6 @@ const Chat = () => {
                               className="p-1 text-gray-400
                                 hover:text-blue-500 hover:bg-blue-50
                                 rounded transition-colors"
-                              title="Edit"
                             >
                               <HiOutlinePencil className="text-xs" />
                             </button>
@@ -438,13 +543,11 @@ const Chat = () => {
                               className="p-1 text-gray-400
                                 hover:text-red-500 hover:bg-red-50
                                 rounded transition-colors"
-                              title="Delete"
                             >
                               <HiOutlineTrash className="text-xs" />
                             </button>
                           </div>
                         )}
-
                       </div>
                     );
                   })
@@ -475,7 +578,10 @@ const Chat = () => {
                     type="text"
                     value={content}
                     onChange={handleTyping}
-                    placeholder={`Message #${activeChannelData?.name}`}
+                    placeholder={activeDM
+                      ? `Message ${activeDM.name}...`
+                      : `Message #${activeChannelData?.name}`
+                    }
                     className="flex-1 px-4 py-2.5 bg-gray-100
                       rounded-xl text-sm focus:outline-none
                       focus:ring-2 focus:ring-blue-500
@@ -495,7 +601,6 @@ const Chat = () => {
                   </button>
                 </form>
               </div>
-
             </>
           )}
         </div>

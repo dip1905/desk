@@ -9,26 +9,51 @@ import {
   useUpdateLeaveStatusMutation,
   useCancelLeaveMutation,
 } from "../../store/api/hrApi";
-import { getInitials, getStatusColor, formatDate } from "../../utils/formatters";
-import useAuth   from "../../hooks/useAuth";
-import toast     from "react-hot-toast";
+import { getInitials, formatDate } from "../../utils/formatters";
+import useAuth    from "../../hooks/useAuth";
+import toast      from "react-hot-toast";
 import {
-  HiOutlinePlus, HiOutlineCheck, HiOutlineX,
+  HiOutlinePlus,
+  HiOutlineCheck,
+  HiOutlineX,
+  HiOutlineBadgeCheck,
 } from "react-icons/hi";
+
+const getStatusColor = (status) => {
+  const colors = {
+    PENDING:          "bg-yellow-100 text-yellow-700",
+    MANAGER_APPROVED: "bg-blue-100 text-blue-700",
+    APPROVED:         "bg-green-100 text-green-700",
+    REJECTED:         "bg-red-100 text-red-700",
+  };
+  return colors[status] || "bg-gray-100 text-gray-600";
+};
+
+const getStatusLabel = (status) => {
+  const labels = {
+    PENDING:          "Pending",
+    MANAGER_APPROVED: "Manager Approved",
+    APPROVED:         "HR Approved",
+    REJECTED:         "Rejected",
+  };
+  return labels[status] || status;
+};
 
 const Leaves = () => {
   const { isManager, user }             = useAuth();
+  const isHR = ["SUPER_ADMIN","ADMIN"].includes(user?.role);
   const [statusFilter, setStatusFilter] = useState("");
   const [isModalOpen,  setIsModalOpen]  = useState(false);
   const [reviewModal,  setReviewModal]  = useState(null);
+  const [reviewAction, setReviewAction] = useState("");
 
   const { data, isLoading, refetch } = useGetLeavesQuery({
     status: statusFilter || undefined,
   });
 
-  const [applyLeave,        { isLoading: isApplying }]  =
+  const [applyLeave,        { isLoading: isApplying }] =
     useApplyLeaveMutation();
-  const [updateLeaveStatus, { isLoading: isUpdating }]  =
+  const [updateLeaveStatus, { isLoading: isUpdating }] =
     useUpdateLeaveStatusMutation();
   const [cancelLeave] = useCancelLeaveMutation();
 
@@ -38,9 +63,7 @@ const Leaves = () => {
     type: "casual", from: "", to: "", reason: "",
   });
 
-  const [reviewForm, setReviewForm] = useState({
-    status: "", reviewNote: "",
-  });
+  const [reviewNote, setReviewNote] = useState("");
 
   const handleApply = async (e) => {
     e.preventDefault();
@@ -55,19 +78,19 @@ const Leaves = () => {
     }
   };
 
-  const handleReview = async (e) => {
-    e.preventDefault();
+  const handleReview = async () => {
     try {
       await updateLeaveStatus({
         id:         reviewModal.id,
-        status:     reviewForm.status,
-        reviewNote: reviewForm.reviewNote,
+        status:     reviewAction,
+        reviewNote: reviewNote,
       }).unwrap();
-      toast.success(`Leave ${reviewForm.status.toLowerCase()}`);
+      toast.success(`Leave ${reviewAction.replace("_"," ").toLowerCase()}`);
       setReviewModal(null);
+      setReviewNote("");
       refetch();
     } catch (error) {
-      toast.error(error?.data?.message || "Failed to update status");
+      toast.error(error?.data?.message || "Failed to update");
     }
   };
 
@@ -80,6 +103,31 @@ const Leaves = () => {
     } catch (error) {
       toast.error(error?.data?.message || "Failed to cancel");
     }
+  };
+
+  // What actions can current user take on a leave
+  const getAvailableActions = (leave) => {
+    const actions = [];
+
+    // Manager can approve pending leaves
+    if (user?.role === "MANAGER" && leave.status === "PENDING") {
+      actions.push({ label: "Approve", status: "MANAGER_APPROVED", color: "green" });
+      actions.push({ label: "Reject",  status: "REJECTED",         color: "red"   });
+    }
+
+    // HR can final approve manager approved leaves
+    if (isHR && leave.status === "MANAGER_APPROVED") {
+      actions.push({ label: "Final Approve", status: "APPROVED",  color: "green" });
+      actions.push({ label: "Reject",        status: "REJECTED",  color: "red"   });
+    }
+
+    // HR can also reject pending leaves directly
+    if (isHR && leave.status === "PENDING") {
+      actions.push({ label: "Manager Approve", status: "MANAGER_APPROVED", color: "blue"  });
+      actions.push({ label: "Reject",          status: "REJECTED",         color: "red"   });
+    }
+
+    return actions;
   };
 
   return (
@@ -97,35 +145,60 @@ const Leaves = () => {
         </div>
         <button
           onClick={() => setIsModalOpen(true)}
-          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700
-            text-white px-4 py-2 rounded-lg text-sm font-medium
-            transition-colors"
+          className="flex items-center gap-2 bg-blue-600
+            hover:bg-blue-700 text-white px-4 py-2 rounded-lg
+            text-sm font-medium transition-colors"
         >
           <HiOutlinePlus className="text-lg" />
           Apply Leave
         </button>
       </div>
 
-      {/* Filter */}
+      {/* Leave Flow Info */}
+      <div className="bg-blue-50 border border-blue-100 rounded-xl
+        p-4 mb-4">
+        <p className="text-blue-800 text-sm font-semibold mb-2">
+          Leave Approval Flow
+        </p>
+        <div className="flex items-center gap-2 text-xs text-blue-600">
+          <span className="bg-yellow-100 text-yellow-700 px-2 py-1
+            rounded-full font-medium">Employee Applies</span>
+          <span>→</span>
+          <span className="bg-blue-100 text-blue-700 px-2 py-1
+            rounded-full font-medium">Manager Approves</span>
+          <span>→</span>
+          <span className="bg-green-100 text-green-700 px-2 py-1
+            rounded-full font-medium">HR Final Approval</span>
+        </div>
+      </div>
+
+      {/* Status Filters */}
       <div className="bg-white rounded-xl border border-gray-100
-        shadow-sm p-4 mb-4 flex gap-3">
-        {["", "PENDING", "APPROVED", "REJECTED"].map((s) => (
+        shadow-sm p-4 mb-4 flex gap-2 flex-wrap">
+        {[
+          { value: "",                 label: "All"              },
+          { value: "PENDING",          label: "Pending"          },
+          { value: "MANAGER_APPROVED", label: "Manager Approved" },
+          { value: "APPROVED",         label: "HR Approved"      },
+          { value: "REJECTED",         label: "Rejected"         },
+        ].map((s) => (
           <button
-            key={s}
-            onClick={() => setStatusFilter(s)}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium
-              transition-colors ${statusFilter === s
+            key={s.value}
+            onClick={() => setStatusFilter(s.value)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium
+              transition-colors ${statusFilter === s.value
                 ? "bg-blue-600 text-white"
                 : "bg-gray-100 text-gray-600 hover:bg-gray-200"
               }`}
           >
-            {s || "All"}
+            {s.label}
           </button>
         ))}
       </div>
 
       {/* Leave List */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm">
+      <div className="bg-white rounded-xl border border-gray-100
+        shadow-sm">
         {isLoading ? (
           <PageSpinner />
         ) : leaves.length === 0 ? (
@@ -136,89 +209,89 @@ const Leaves = () => {
           />
         ) : (
           <div className="divide-y divide-gray-50">
-            {leaves.map((leave) => (
-              <div key={leave.id}
-                className="flex items-center justify-between p-4
-                  hover:bg-gray-50 transition-colors">
+            {leaves.map((leave) => {
+              const actions = getAvailableActions(leave);
+              return (
+                <div key={leave.id}
+                  className="p-4 hover:bg-gray-50 transition-colors">
+                  <div className="flex items-start justify-between">
 
-                <div className="flex items-center gap-3">
-                  {/* Avatar */}
-                  <div className="w-9 h-9 rounded-full bg-blue-500
-                    flex items-center justify-center text-white
-                    text-xs font-bold flex-shrink-0">
-                    {getInitials(leave.employee?.user?.name)}
-                  </div>
-
-                  <div>
-                    <p className="text-sm font-medium text-gray-800">
-                      {leave.employee?.user?.name}
-                    </p>
-                    <p className="text-xs text-gray-400 mt-0.5">
-                      <span className="capitalize">{leave.type}</span>
-                      {" "}leave •{" "}
-                      {formatDate(leave.from)} — {formatDate(leave.to)}
-                    </p>
-                    {leave.reason && (
-                      <p className="text-xs text-gray-500 mt-0.5 max-w-xs
-                        truncate">
-                        {leave.reason}
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <span className={`text-xs px-2 py-0.5 rounded-full
-                    font-medium ${getStatusColor(leave.status)}`}>
-                    {leave.status}
-                  </span>
-
-                  {/* Manager actions */}
-                  {isManager() && leave.status === "PENDING" && (
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => {
-                          setReviewModal(leave);
-                          setReviewForm({
-                            status: "APPROVED", reviewNote: ""
-                          });
-                        }}
-                        className="p-1.5 text-green-500 hover:bg-green-50
-                          rounded-lg transition-colors"
-                        title="Approve"
-                      >
-                        <HiOutlineCheck className="text-base" />
-                      </button>
-                      <button
-                        onClick={() => {
-                          setReviewModal(leave);
-                          setReviewForm({
-                            status: "REJECTED", reviewNote: ""
-                          });
-                        }}
-                        className="p-1.5 text-red-500 hover:bg-red-50
-                          rounded-lg transition-colors"
-                        title="Reject"
-                      >
-                        <HiOutlineX className="text-base" />
-                      </button>
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-full bg-blue-500
+                        flex items-center justify-center text-white
+                        text-xs font-bold flex-shrink-0">
+                        {getInitials(leave.employee?.user?.name)}
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-gray-800">
+                          {leave.employee?.user?.name}
+                        </p>
+                        <p className="text-xs text-gray-400 mt-0.5">
+                          <span className="capitalize">{leave.type}</span>
+                          {" "}leave •{" "}
+                          {formatDate(leave.from)} — {formatDate(leave.to)}
+                        </p>
+                        {leave.reason && (
+                          <p className="text-xs text-gray-500 mt-0.5
+                            max-w-xs">
+                            {leave.reason}
+                          </p>
+                        )}
+                        {leave.reviewNote && (
+                          <p className="text-xs text-blue-600 mt-0.5">
+                            Note: {leave.reviewNote}
+                          </p>
+                        )}
+                      </div>
                     </div>
-                  )}
 
-                  {/* Employee cancel */}
-                  {leave.employee?.user?.id === user?.id &&
-                    leave.status === "PENDING" && (
-                    <button
-                      onClick={() => handleCancel(leave.id)}
-                      className="text-xs text-red-500 hover:underline"
-                    >
-                      Cancel
-                    </button>
-                  )}
+                    <div className="flex items-center gap-2
+                      flex-shrink-0">
+                      <span className={`text-xs px-2 py-0.5
+                        rounded-full font-medium
+                        ${getStatusColor(leave.status)}`}>
+                        {getStatusLabel(leave.status)}
+                      </span>
+
+                      {/* Action buttons */}
+                      {actions.map((action) => (
+                        <button
+                          key={action.status}
+                          onClick={() => {
+                            setReviewModal(leave);
+                            setReviewAction(action.status);
+                          }}
+                          className={`p-1.5 rounded-lg
+                            transition-colors text-xs font-medium
+                            px-2 py-1
+                            ${action.color === "green"
+                              ? "bg-green-50 text-green-600 hover:bg-green-100"
+                              : action.color === "blue"
+                                ? "bg-blue-50 text-blue-600 hover:bg-blue-100"
+                                : "bg-red-50 text-red-600 hover:bg-red-100"
+                            }`}
+                        >
+                          {action.label}
+                        </button>
+                      ))}
+
+                      {/* Employee cancel */}
+                      {leave.employee?.user?.id === user?.id &&
+                        leave.status === "PENDING" && (
+                        <button
+                          onClick={() => handleCancel(leave.id)}
+                          className="text-xs text-red-500
+                            hover:underline"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                    </div>
+
+                  </div>
                 </div>
-
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -230,7 +303,6 @@ const Leaves = () => {
         title="Apply for Leave"
       >
         <form onSubmit={handleApply} className="space-y-4">
-
           <div>
             <label className="block text-sm font-medium
               text-gray-700 mb-1">Leave Type *</label>
@@ -248,7 +320,6 @@ const Leaves = () => {
               <option value="earned">Earned Leave</option>
             </select>
           </div>
-
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium
@@ -279,7 +350,6 @@ const Leaves = () => {
               />
             </div>
           </div>
-
           <div>
             <label className="block text-sm font-medium
               text-gray-700 mb-1">Reason *</label>
@@ -295,7 +365,6 @@ const Leaves = () => {
                 focus:ring-2 focus:ring-blue-500 resize-none"
             />
           </div>
-
           <div className="flex gap-3 pt-2">
             <button
               type="button"
@@ -315,76 +384,84 @@ const Leaves = () => {
               {isApplying ? "Submitting..." : "Submit Application"}
             </button>
           </div>
-
         </form>
       </Modal>
 
       {/* Review Modal */}
-      <Modal
-        isOpen={!!reviewModal}
-        onClose={() => setReviewModal(null)}
-        title={`${reviewForm.status === "APPROVED"
-          ? "Approve" : "Reject"} Leave Request`}
-      >
-        <form onSubmit={handleReview} className="space-y-4">
-          <div className="bg-gray-50 rounded-lg p-4 text-sm">
-            <p className="font-medium text-gray-700">
-              {reviewModal?.employee?.user?.name}
-            </p>
-            <p className="text-gray-500 mt-0.5">
-              <span className="capitalize">{reviewModal?.type}</span>
-              {" "}leave — {formatDate(reviewModal?.from)} to{" "}
-              {formatDate(reviewModal?.to)}
-            </p>
-            <p className="text-gray-500 mt-0.5">{reviewModal?.reason}</p>
-          </div>
+      {reviewModal && (
+        <Modal
+          isOpen={!!reviewModal}
+          onClose={() => {
+            setReviewModal(null);
+            setReviewNote("");
+          }}
+          title={`${reviewAction === "APPROVED"
+            ? "Final Approve"
+            : reviewAction === "MANAGER_APPROVED"
+              ? "Manager Approve"
+              : "Reject"} Leave Request`}
+        >
+          <div className="space-y-4">
+            <div className="bg-gray-50 rounded-lg p-4 text-sm">
+              <p className="font-medium text-gray-700">
+                {reviewModal.employee?.user?.name}
+              </p>
+              <p className="text-gray-500 mt-0.5">
+                <span className="capitalize">{reviewModal.type}</span>
+                {" "}leave — {formatDate(reviewModal.from)} to{" "}
+                {formatDate(reviewModal.to)}
+              </p>
+              <p className="text-gray-500 mt-0.5">
+                {reviewModal.reason}
+              </p>
+            </div>
 
-          <div>
-            <label className="block text-sm font-medium
-              text-gray-700 mb-1">Review Note (optional)</label>
-            <textarea
-              rows={3}
-              value={reviewForm.reviewNote}
-              onChange={(e) => setReviewForm((p) => ({
-                ...p, reviewNote: e.target.value
-              }))}
-              placeholder="Add a note for the employee..."
-              className="w-full px-3 py-2 border border-gray-200
-                rounded-lg text-sm focus:outline-none
-                focus:ring-2 focus:ring-blue-500 resize-none"
-            />
-          </div>
+            <div>
+              <label className="block text-sm font-medium
+                text-gray-700 mb-1">
+                Review Note (optional)
+              </label>
+              <textarea
+                rows={3}
+                value={reviewNote}
+                onChange={(e) => setReviewNote(e.target.value)}
+                placeholder="Add a note for the employee..."
+                className="w-full px-3 py-2 border border-gray-200
+                  rounded-lg text-sm focus:outline-none
+                  focus:ring-2 focus:ring-blue-500 resize-none"
+              />
+            </div>
 
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={() => setReviewModal(null)}
-              className="flex-1 px-4 py-2 border border-gray-200
-                rounded-lg text-sm font-medium text-gray-600
-                hover:bg-gray-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit" disabled={isUpdating}
-              className={`flex-1 px-4 py-2 rounded-lg text-sm
-                font-medium text-white disabled:opacity-50
-                ${reviewForm.status === "APPROVED"
-                  ? "bg-green-500 hover:bg-green-600"
-                  : "bg-red-500 hover:bg-red-600"
-                }`}
-            >
-              {isUpdating
-                ? "Processing..."
-                : reviewForm.status === "APPROVED"
-                  ? "Approve Leave"
-                  : "Reject Leave"
-              }
-            </button>
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setReviewModal(null);
+                  setReviewNote("");
+                }}
+                className="flex-1 px-4 py-2 border border-gray-200
+                  rounded-lg text-sm font-medium text-gray-600
+                  hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleReview}
+                disabled={isUpdating}
+                className={`flex-1 px-4 py-2 rounded-lg text-sm
+                  font-medium text-white disabled:opacity-50
+                  ${reviewAction === "REJECTED"
+                    ? "bg-red-500 hover:bg-red-600"
+                    : reviewAction === "MANAGER_APPROVED"
+                      ? "bg-blue-500 hover:bg-blue-600"
+                      : "bg-green-500 hover:bg-green-600"
+                  }`}
+              >
+                {isUpdating ? "Processing..." : "Confirm"}
+              </button>
+            </div>
           </div>
-
-        </form>
-      </Modal>
+        </Modal>
+      )}
 
     </AppLayout>
   );

@@ -1,18 +1,14 @@
 const { z }  = require("zod");
 const prisma = require("../../../config/db");
 
-// ─── VALIDATION ───────────────────────────────────────
-
 const applyLeaveSchema = z.object({
   type:   z.enum(["sick", "casual", "earned"]),
   from:   z.string(),
   to:     z.string(),
-  reason: z.string().min(5, "Reason must be at least 5 characters"),
+  reason: z.string().min(5),
 });
 
 // ─── APPLY LEAVE ──────────────────────────────────────
-// POST /api/leaves
-
 const applyLeave = async (req, res, next) => {
   try {
     const parsed = applyLeaveSchema.safeParse(req.body);
@@ -25,13 +21,11 @@ const applyLeave = async (req, res, next) => {
     }
 
     const { type, from, to, reason } = parsed.data;
-
     const fromDate = new Date(from);
     const toDate   = new Date(to);
     const today    = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Cannot apply for past dates
     if (fromDate < today) {
       return res.status(400).json({
         success: false,
@@ -39,7 +33,6 @@ const applyLeave = async (req, res, next) => {
       });
     }
 
-    // from must be before or equal to to
     if (fromDate > toDate) {
       return res.status(400).json({
         success: false,
@@ -47,7 +40,6 @@ const applyLeave = async (req, res, next) => {
       });
     }
 
-    // Get employee record
     const employee = await prisma.employee.findUnique({
       where: { userId: req.user.id }
     });
@@ -59,12 +51,10 @@ const applyLeave = async (req, res, next) => {
       });
     }
 
-    // Calculate number of days requested
     const diffTime = Math.abs(toDate - fromDate);
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+    const balance  = employee.leaveBalance;
 
-    // Check leave balance
-    const balance = employee.leaveBalance;
     if (balance[type] < diffDays) {
       return res.status(400).json({
         success: false,
@@ -72,7 +62,6 @@ const applyLeave = async (req, res, next) => {
       });
     }
 
-    // Create leave request
     const leave = await prisma.leave.create({
       data: {
         employeeId: employee.id,
@@ -84,9 +73,28 @@ const applyLeave = async (req, res, next) => {
       },
       include: {
         employee: {
-          include: { user: { select: { name: true, email: true } } }
+          include: {
+            user: { select: { name: true, email: true } }
+          }
         }
       }
+    });
+
+    // Notify managers about new leave request
+    const managers = await prisma.user.findMany({
+      where: {
+        role: { in: ["MANAGER", "ADMIN", "SUPER_ADMIN"] },
+        isActive: true,
+      }
+    });
+
+    await prisma.notification.createMany({
+      data: managers.map((m) => ({
+        userId:  m.id,
+        title:   "New Leave Request",
+        message: `${req.user.name} has applied for ${type} leave from ${fromDate.toDateString()} to ${toDate.toDateString()}`,
+        type:    "LEAVE",
+      }))
     });
 
     res.status(201).json({
@@ -101,31 +109,22 @@ const applyLeave = async (req, res, next) => {
 };
 
 // ─── GET ALL LEAVES ───────────────────────────────────
-// GET /api/leaves
-
 const getAllLeaves = async (req, res, next) => {
   try {
     const { status, page = 1, limit = 20 } = req.query;
-
-    const isManager = ["SUPER_ADMIN", "ADMIN", "MANAGER"]
+    const isManager = ["SUPER_ADMIN","ADMIN","MANAGER"]
       .includes(req.user.role);
 
-    // Managers see all leaves
-    // Employees see only their own
     let where = {};
 
     if (!isManager) {
       const employee = await prisma.employee.findUnique({
         where: { userId: req.user.id }
       });
-      if (employee) {
-        where.employeeId = employee.id;
-      }
+      if (employee) where.employeeId = employee.id;
     }
 
-    if (status) {
-      where.status = status;
-    }
+    if (status) where.status = status;
 
     const [total, leaves] = await Promise.all([
       prisma.leave.count({ where }),
@@ -136,10 +135,8 @@ const getAllLeaves = async (req, res, next) => {
             include: {
               user: {
                 select: {
-                  id:     true,
-                  name:   true,
-                  email:  true,
-                  avatar: true,
+                  id: true, name: true,
+                  email: true, avatar: true,
                 }
               }
             }
@@ -169,17 +166,23 @@ const getAllLeaves = async (req, res, next) => {
   }
 };
 
-// ─── UPDATE LEAVE STATUS ──────────────────────────────
-// PATCH /api/leaves/:id/status
-
+// ─── UPDATE LEAVE STATUS (TWO STEP) ──────────────────
+// Step 1: Manager approves → status becomes MANAGER_APPROVED
+// Step 2: HR (Admin) confirms → status becomes APPROVED
 const updateLeaveStatus = async (req, res, next) => {
   try {
     const { status, reviewNote } = req.body;
 
-    if (!["APPROVED", "REJECTED"].includes(status)) {
+    const validStatuses = [
+      "MANAGER_APPROVED",
+      "APPROVED",
+      "REJECTED"
+    ];
+
+    if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
-        message: "Status must be APPROVED or REJECTED",
+        message: "Invalid status. Must be MANAGER_APPROVED, APPROVED or REJECTED",
       });
     }
 
@@ -195,29 +198,44 @@ const updateLeaveStatus = async (req, res, next) => {
       });
     }
 
-    if (leave.status !== "PENDING") {
-      return res.status(400).json({
-        success: false,
-        message: `Leave is already ${leave.status}`,
-      });
+    // Manager can only do first approval
+    if (req.user.role === "MANAGER") {
+      if (leave.status !== "PENDING") {
+        return res.status(400).json({
+          success: false,
+          message: `Leave is already ${leave.status}`,
+        });
+      }
+      if (status !== "MANAGER_APPROVED" && status !== "REJECTED") {
+        return res.status(403).json({
+          success: false,
+          message: "Managers can only approve or reject pending leaves",
+        });
+      }
     }
 
-    // If approved → deduct from leave balance
+    // HR (Admin) can do final approval
+    if (["ADMIN", "SUPER_ADMIN"].includes(req.user.role)) {
+      if (status === "APPROVED" && leave.status !== "MANAGER_APPROVED") {
+        return res.status(400).json({
+          success: false,
+          message: "Leave must be manager approved first",
+        });
+      }
+    }
+
+    // Deduct balance on final APPROVED
     if (status === "APPROVED") {
-      const diffTime = Math.abs(
-        new Date(leave.to) - new Date(leave.from)
-      );
       const diffDays = Math.ceil(
-        diffTime / (1000 * 60 * 60 * 24)
+        Math.abs(new Date(leave.to) - new Date(leave.from))
+        / (1000 * 60 * 60 * 24)
       ) + 1;
 
-      const currentBalance = leave.employee.leaveBalance;
-      const updatedBalance  = {
-        ...currentBalance,
-        [leave.type]: currentBalance[leave.type] - diffDays,
+      const updatedBalance = {
+        ...leave.employee.leaveBalance,
+        [leave.type]: leave.employee.leaveBalance[leave.type] - diffDays,
       };
 
-      // Update balance and leave status in transaction
       await prisma.$transaction([
         prisma.employee.update({
           where: { id: leave.employeeId },
@@ -228,28 +246,32 @@ const updateLeaveStatus = async (req, res, next) => {
           data:  { status, reviewNote: reviewNote || null },
         }),
       ]);
-
     } else {
-      // Rejected — just update status
       await prisma.leave.update({
         where: { id: req.params.id },
         data:  { status, reviewNote: reviewNote || null },
       });
     }
 
-    // Create notification for employee
+    // Notify employee
+    const notifMessage = status === "MANAGER_APPROVED"
+      ? `Your ${leave.type} leave has been approved by manager. Awaiting HR confirmation.`
+      : status === "APPROVED"
+        ? `Your ${leave.type} leave has been fully approved by HR.`
+        : `Your ${leave.type} leave has been rejected. ${reviewNote ? `Note: ${reviewNote}` : ""}`;
+
     await prisma.notification.create({
       data: {
         userId:  leave.employee.userId,
-        title:   `Leave ${status}`,
-        message: `Your ${leave.type} leave request has been ${status.toLowerCase()}.${reviewNote ? ` Note: ${reviewNote}` : ""}`,
+        title:   `Leave ${status.replace("_", " ")}`,
+        message: notifMessage,
         type:    "LEAVE",
       }
     });
 
     res.status(200).json({
       success: true,
-      message: `Leave ${status.toLowerCase()} successfully`,
+      message: `Leave ${status.replace("_", " ").toLowerCase()} successfully`,
     });
 
   } catch (error) {
@@ -258,8 +280,6 @@ const updateLeaveStatus = async (req, res, next) => {
 };
 
 // ─── CANCEL LEAVE ─────────────────────────────────────
-// DELETE /api/leaves/:id
-
 const cancelLeave = async (req, res, next) => {
   try {
     const leave = await prisma.leave.findUnique({
@@ -274,7 +294,6 @@ const cancelLeave = async (req, res, next) => {
       });
     }
 
-    // Can only cancel own leave
     if (leave.employee.userId !== req.user.id) {
       return res.status(403).json({
         success: false,
@@ -282,7 +301,6 @@ const cancelLeave = async (req, res, next) => {
       });
     }
 
-    // Can only cancel PENDING leaves
     if (leave.status !== "PENDING") {
       return res.status(400).json({
         success: false,
@@ -290,9 +308,7 @@ const cancelLeave = async (req, res, next) => {
       });
     }
 
-    await prisma.leave.delete({
-      where: { id: req.params.id }
-    });
+    await prisma.leave.delete({ where: { id: req.params.id } });
 
     res.status(200).json({
       success: true,
